@@ -199,6 +199,28 @@
          background:var(--ink);color:#fff;padding:9px 18px;border-radius:999px;font-size:13px;
          opacity:0;transition:.25s;z-index:99;pointer-events:none}
   #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* 安全区（iPhone 刘海 / 底部横条） */
+  header{ padding-top: env(safe-area-inset-top, 0px); }
+
+  /* 手机端：底部导航 + 更大触控区域 */
+  @media (max-width: 640px){
+    header{ position:static; backdrop-filter:none; background:var(--bg); }
+    body{ padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+    nav{
+      position:fixed; left:0; right:0; bottom:0; z-index:40;
+      background:rgba(255,255,255,.92); backdrop-filter:blur(10px);
+      border-top:1px solid var(--line);
+      margin:0; padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+      box-shadow:0 -4px 20px -12px rgba(32,29,25,.16);
+    }
+    nav button{ border-bottom:0; border-radius:11px; padding:12px 4px; }
+    nav button.on{ background:var(--accent-soft); color:var(--accent-2); }
+    .btn{ min-height:44px; }
+    .chip{ min-height:40px; display:inline-flex; align-items:center; justify-content:center; }
+    input[type=number], select, input[type=text]{ font-size:16px; }
+    #toast{ bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+  }
 </style>
 </head>
 <body>
@@ -422,7 +444,14 @@ const K = {profile:'od_profile', wardrobe:'od_wardrobe', logs:'od_logs', weather
 const defaultProfile = {gender:'neutral', coldTrait:'normal', heatTrait:'normal', preferredStyles:[], city:'', personalOffset:0, feedbackCount:0};
 
 function load(key, fb){ try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; }catch(e){ return fb; } }
-function save(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
+function save(key, val){
+  try{
+    localStorage.setItem(key, JSON.stringify(val));
+  }catch(e){
+    console.warn('save failed:', e);
+    toast('保存失败：浏览器存储空间不足或被禁用');
+  }
+}
 
 let profile = Object.assign({}, defaultProfile, load(K.profile, {}));
 let wardrobe = load(K.wardrobe, []);

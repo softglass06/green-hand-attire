@@ -1,4 +1,5 @@
 /* 小白穿搭 service worker —— 应用壳离线缓存 */
+/* 缓存版本：改动静态资源（图标 / manifest）后 +1，旧缓存会被清理 */
 const CACHE = 'xiaobai-dress-v1';
 const ASSETS = [
   './',
@@ -33,18 +34,28 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
     return;
   }
+  if (e.request.method !== 'GET') return;
 
-  // 其余 GET 静态资源：缓存优先，缺失时回源并缓存
-  if (e.request.method === 'GET') {
+  // 页面导航：网络优先（部署后尽快拿到新版），离线时回退缓存
+  if (e.request.mode === 'navigate') {
     e.respondWith(
-      caches.match(e.request).then((cached) => {
-        if (cached) return cached;
-        return fetch(e.request).then((res) => {
+      fetch(e.request)
+        .then((res) => {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy));
           return res;
-        });
-      })
+        })
+        .catch(() => caches.match(e.request).then((c) => c || caches.match('./index.html')))
     );
+    return;
   }
+
+  // 其余静态资源：缓存优先，缺失时回源并缓存
+  e.respondWith(
+    caches.match(e.request).then((cached) => cached || fetch(e.request).then((res) => {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(e.request, copy));
+      return res;
+    }))
+  );
 });
