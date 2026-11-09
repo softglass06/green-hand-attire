@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>穿搭助手 · 本地</title>
+<title>小白穿搭 · 本地</title>
 <style>
   :root{
     --bg:#f6f4f0;          /* page plane (warm) */
@@ -197,7 +197,7 @@
 <header>
   <div class="hd">
     <div class="hd-top">
-      <div class="logo">穿搭<em>助手</em></div>
+      <div class="logo">小白<em>穿搭</em></div>
       <div class="sub">纯本地 · 数据仅存于本机浏览器</div>
     </div>
     <nav id="nav">
@@ -950,7 +950,7 @@ function exportJSON(){
   const blob = new Blob([JSON.stringify({profile, wardrobe, logs, weather}, null, 2)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = '穿搭助手备份-'+todayStr()+'.json';
+  a.download = '小白穿搭备份-'+todayStr()+'.json';
   a.click();
   URL.revokeObjectURL(a.href);
 }
