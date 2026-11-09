@@ -168,6 +168,8 @@
   .pick .opt.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-2);font-weight:600}
   .check{display:flex;align-items:center;gap:8px;padding:7px 4px;font-size:14px;cursor:pointer;user-select:none}
   .check input{width:18px;height:18px;accent-color:var(--accent)}
+.itemComfort{display:inline-flex;gap:4px;align-items:center}
+.itemComfort button.on{background:var(--accent-soft);color:var(--accent-2);border-color:var(--accent)}
 
   /* stats */
   .kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px}
@@ -252,6 +254,7 @@
 
     <div class="card">
       <h2>今日穿搭建议</h2>
+      <div id="tuneBar"></div>
       <div id="recToday"></div>
     </div>
     <div class="card">
@@ -329,6 +332,8 @@
     <div class="pick" id="pickLiked"></div>
     <h3>冷暖合适吗？</h3>
     <div class="pick" id="pickComfort"></div>
+    <h3>合身吗？</h3>
+    <div class="pick" id="pickFit"></div>
     <div class="row" style="margin-top:18px">
       <button class="btn primary" style="flex:1" id="btnSaveRec">保存记录</button>
       <button class="btn ghost" id="btnCancelRec">取消</button>
@@ -353,6 +358,8 @@
 <script>
 /* ============================== 常量 ============================== */
 const STYLES = ['休闲','商务','运动','学院','街头','优雅','通勤','户外','甜美','简约'];
+const FORMAL = ['商务','通勤','优雅','简约'];
+const CASUAL = ['休闲','运动','街头','学院','户外','甜美'];
 const PARTS = [
   {key:'inner', label:'内搭', ic:'🧦'},
   {key:'top',   label:'上身', ic:'👕'},
@@ -465,7 +472,8 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;
 function dateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function todayStr(){ return dateStr(new Date()); }
 function tomorrowStr(){ const d=new Date(); d.setDate(d.getDate()+1); return dateStr(d); }
-function daysSince(ds){ if(!ds) return Infinity; const d=new Date(ds+'T00:00:00'); return Math.floor((Date.now()-d.getTime())/86400000); }
+function daysSince(ds){ if(!ds) return null; const d=new Date(ds+'T00:00:00'); return Math.floor((Date.now()-d.getTime())/86400000); }
+function dateOffset(days){ const d=new Date(); d.setDate(d.getDate()+days); return dateStr(d); }
 function round1(x){ return Math.round(x*10)/10; }
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('on'),1800); }
 
@@ -487,15 +495,24 @@ function feelsLike(w, p){
 }
 function bandFor(feels){ return BANDS.find(b=>feels < b.max) || BANDS[BANDS.length-1]; }
 
+let tune = { temp:0, style:null };   // 会话内微调（更暖/更凉/更正式/更休闲）
+let recCands = {};                   // 替换单品轮换位置 { date: { part: {list, idx, sig} } }
+
 /* ============================== 推荐引擎 ============================== */
 function matchWardrobe(part, level, feels, p, wd){
   const pref = new Set(p.preferredStyles||[]);
+  const bonus = s => tune.style==='formal' ? (FORMAL.includes(s)?2:0)
+                   : tune.style==='casual' ? (CASUAL.includes(s)?2:0) : 0;
   return wd
-    .filter(it => it.part===part && Math.abs((it.thickness||2)-level)<=1
-             && (it.min||-99)-2 <= feels && feels <= (it.max||99)+2)
+    .filter(it => {
+      const bias = (it.comfortBias||0)*2;   // 单件历史冷暖：偏冷→低温端外扩
+      return it.part===part && Math.abs((it.thickness||2)-level)<=1
+             && (it.min||-99)-2 <= feels + bias && feels + bias <= (it.max||99)+2;
+    })
     .sort((a,b)=>{
-      const pa = pref.has(a.style)?1:0, pb = pref.has(b.style)?1:0;
-      if(pa!==pb) return pb-pa;
+      const sa = (pref.has(a.style)?1:0)+bonus(a.style);
+      const sb = (pref.has(b.style)?1:0)+bonus(b.style);
+      if(sa!==sb) return sb-sa;
       return (b.wornCount||0)-(a.wornCount||0);
     })
     .slice(0,3);
@@ -507,11 +524,14 @@ function recommend(dateStr){
   if(!w){ box.innerHTML = '<div class="empty">尚未录入该日天气，请先在上方填写。</div>'; return; }
 
   const f = feelsLike(w, profile);
-  const band = bandFor(f.feels);
+  const tuned = round1(f.feels + (tune.temp||0));
+  const band = bandFor(tuned);
   const isFemale = profile.gender==='female';
+  const adopted = new Set();
 
   let html = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">'
-    + '<span class="feel">'+f.feels+'°C</span>'
+    + '<span class="feel">'+tuned+'°C</span>'
+    + (tune.temp ? '<span class="tag">已微调</span>' : '')
     + '<small style="color:var(--ink-3);font-size:13px">体感区间 '+f.low+' ~ '+f.high+'°C · '+band.name+'</small>'
     + '</div>';
 
@@ -522,14 +542,23 @@ function recommend(dateStr){
     if(skip){
       val = '<span class="generic">无需</span>';
     } else {
-      const matched = matchWardrobe(part.key, level, f.feels, profile, wardrobe);
-      if(matched.length){
-        val = '<span class="matched">'+matched.map(m=>esc(m.name)+(m.style?'<span class="tag">'+esc(m.style)+'</span>':'')).join(' + ')+'</span>';
+      const matched = matchWardrobe(part.key, level, tuned, profile, wardrobe);
+      if(!recCands[dateStr]) recCands[dateStr] = {};
+      const sig = matched.map(m=>m.id).join(',');
+      const c = recCands[dateStr][part.key];
+      if(!c || c.sig!==sig){ recCands[dateStr][part.key] = {list:matched, idx:0, sig}; }
+      else { c.list = matched; }
+      const cur = recCands[dateStr][part.key];
+      const pick = cur.list[cur.idx];
+      if(pick){
+        adopted.add(pick.id);
+        val = '<span class="matched">'+esc(pick.name)+(pick.style?'<span class="tag">'+esc(pick.style)+'</span>':'')+'</span>'
+            + (cur.list.length>1 ? ' <button class="btn sm ghost" data-swap="'+dateStr+'|'+part.key+'">↻ 换一个</button>' : '');
       } else {
         val = '<span class="generic">'+(GENERIC[part.key][level]||'—')+'</span>';
       }
       // 女性裙装替换
-      if(isFemale && part.key==='bottom' && f.feels>=16 && level<=2){
+      if(isFemale && part.key==='bottom' && tuned>=16 && level<=2){
         val += ' <span class="generic">/ 或裙装（连衣裙）</span>';
       }
     }
@@ -546,15 +575,45 @@ function recommend(dateStr){
   if(kind==='晴' && f.high>=26) notes.push('紫外线较强，注意防晒');
   const wind = Number(w.wind)||0;
   if(wind>=5) notes.push('风力较大，体感更冷，注意挡风');
-  if(isFemale && f.feels>=16) notes.push('可考虑裙装，配打底袜更舒适');
+  if(isFemale && tuned>=16) notes.push('可考虑裙装，配打底袜更舒适');
   if(notes.length) html += '<div class="note">'+notes.map(n=>'<b>·</b> '+esc(n)).join('<br>')+'</div>';
 
   const canRecord = dateStr===todayStr();
   if(canRecord){
-    html += '<div style="margin-top:14px"><button class="btn primary" id="btnRecordToday">✍️ 记录今天的穿搭</button></div>';
+    html += '<div style="margin-top:14px;display:flex;gap:8px">'
+          + '<button class="btn primary" id="btnAdopt">采用这套穿搭</button>'
+          + '<button class="btn ghost" id="btnRecordToday">✍️ 手动记录</button></div>';
   }
   box.innerHTML = html;
-  if(canRecord) document.getElementById('btnRecordToday').onclick = openRecord;
+  if(canRecord){
+    document.getElementById('btnAdopt').onclick = ()=>openRecord(adopted);
+    document.getElementById('btnRecordToday').onclick = ()=>openRecord(null);
+  }
+  box.querySelectorAll('[data-swap]').forEach(b=>b.onclick=()=>{
+    const seg = b.getAttribute('data-swap').split('|');
+    const c = recCands[seg[0]] && recCands[seg[0]][seg[1]];
+    if(c && c.list.length>1){ c.idx=(c.idx+1)%c.list.length; recommend(seg[0]); }
+  });
+}
+
+/* ============================== 推荐微调条 ============================== */
+function renderTuneBar(){
+  const el = document.getElementById('tuneBar');
+  if(!el) return;
+  const opt=(k,v,l)=>'<button class="btn sm '+(tune[k]===v?'primary':'ghost')+'" data-k="'+k+'" data-v="'+v+'">'+l+'</button>';
+  el.innerHTML =
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">'
+    + '<span style="font-size:12px;color:var(--ink-3)">微调：</span>'
+    + opt('temp',-2,'更暖') + opt('temp',2,'更凉')
+    + opt('style','formal','更正式') + opt('style','casual','更休闲')
+    + '<button class="btn sm ghost" data-k="reset">重置</button></div>';
+  el.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>{
+    const k=b.getAttribute('data-k'), v=b.getAttribute('data-v');
+    if(k==='reset'){ tune={temp:0,style:null}; }
+    else if(k==='temp'){ tune.temp = (tune.temp===Number(v)?0:Number(v)); }
+    else { tune.style = (tune.style===v?null:v); }
+    renderTuneBar(); recommend(todayStr()); recommend(tomorrowStr());
+  });
 }
 
 /* ============================== 天气 API（Open-Meteo，免费无需 key） ============================== */
@@ -709,18 +768,58 @@ function renderWardrobe(){
 
 function renderStale(){
   const el = document.getElementById('staleList');
-  const now = new Date();
-  const stale = wardrobe.filter(it=>daysSince(it.lastWorn) > 90);
-  if(!stale.length){ el.innerHTML = '<div class="empty">暂无长期未穿的单品，继续保持～</div>'; return; }
+  const never = wardrobe.filter(it=>!it.lastWorn);
+  const stale = wardrobe.filter(it=>{
+    const d = daysSince(it.lastWorn);
+    return d!=null && d>90 && !(it.snoozeUntil && it.snoozeUntil > todayStr());
+  });
+  let html = '';
+  if(stale.length){
+    const f = todayStr() in weather ? feelsLike(weather[todayStr()], profile).feels : null;
+    html += stale.map(it=>{
+      const inSeason = f!=null && (it.min-3) <= f && f <= (it.max+3);
+      return '<div class="wd-item"><div>'
+        + '<div class="nm">'+esc(it.name)+'</div>'
+        + '<div class="meta">已 '+daysSince(it.lastWorn)+' 天未穿 · '+(inSeason?'现在正是适合穿它的季节，却一直没穿':'已跨过一个季节未穿')+'</div>'
+        + '<div class="meta" style="margin-top:8px">'
+        +   '<button class="btn sm" data-keep="'+esc(it.id)+'">还喜欢·还合身</button> '
+        +   '<button class="btn sm ghost" data-challenge="'+esc(it.id)+'">搭配挑战</button> '
+        +   '<button class="btn sm ghost" data-drop="'+esc(it.id)+'" style="color:var(--danger)">不喜欢/不合身</button>'
+        + '</div></div>'
+        + '<span class="badge stale">长期未穿</span></div>';
+    }).join('');
+  }
+  if(never.length){
+    html += '<div class="empty">另有 '+never.length+' 件尚未记录过穿着（不视为长期未穿）。</div>';
+  }
+  el.innerHTML = html || '<div class="empty">暂无长期未穿的单品，继续保持～</div>';
+
+  el.querySelectorAll('[data-keep]').forEach(b=>b.onclick=()=>{
+    const it = wardrobe.find(x=>x.id===b.getAttribute('data-keep'));
+    if(it){ it.snoozeUntil = dateOffset(30); persist(); toast('已记下，30 天内不再提醒'); }
+    renderStale();
+  });
+  el.querySelectorAll('[data-drop]').forEach(b=>b.onclick=()=>{
+    const id = b.getAttribute('data-drop');
+    const it = wardrobe.find(x=>x.id===id);
+    if(it && confirm('把「'+it.name+'」移出衣橱？')){
+      wardrobe = wardrobe.filter(x=>x.id!==id);
+      persist(); renderStale(); renderWardrobe(); renderStats();
+    }
+  });
+  el.querySelectorAll('[data-challenge]').forEach(b=>b.onclick=()=>{
+    const it = wardrobe.find(x=>x.id===b.getAttribute('data-challenge'));
+    if(it) toast(challengeFor(it));
+  });
+}
+
+function challengeFor(it){
   const f = todayStr() in weather ? feelsLike(weather[todayStr()], profile).feels : null;
-  el.innerHTML = stale.map(it=>{
-    const inSeason = f!=null && (it.min-3) <= f && f <= (it.max+3);
-    const txt = inSeason ? '现在正是适合穿它的季节，却一直没穿 —— 考虑重拾或更换'
-                        : '已跨过一个季节未穿，考虑是否还适合 / 是否需要更换';
-    return '<div class="wd-item"><div><div class="nm">'+esc(it.name)+'</div>'
-      + '<div class="meta">已 '+daysSince(it.lastWorn)+' 天未穿 · '+esc(txt)+'</div></div>'
-      + '<span class="badge stale">长期未穿</span></div>';
-  }).join('');
+  const recent = wardrobe.filter(x=>x.id!==it.id && x.lastWorn && daysSince(x.lastWorn)!=null && daysSince(x.lastWorn)<=30
+    && (!f || (x.min-3)<=f && f<=(x.max+3)));
+  const picks = [];
+  for(const p of PARTS){ if(p.key===it.part) continue; const hit=recent.find(x=>x.part===p.key); if(hit) picks.push(hit.name); }
+  return '搭配挑战：'+it.name+' + '+(picks.slice(0,3).join(' + ')||'再挑 1~2 件近期常穿单品');
 }
 
 /* ============================== 渲染：添加/编辑单品 ============================== */
@@ -765,11 +864,11 @@ function saveItemForm(){
 function clamp(a,b,x){ return Math.max(a, Math.min(b, x)); }
 
 /* ============================== 渲染：记录弹窗 ============================== */
-let recPick = {outfit:new Set(), liked:null, comfort:null};
-function openRecord(){
+let recPick = {outfit:new Set(), liked:null, comfort:null, fit:null, itemComfort:{}};
+function openRecord(pre){
   const w = weather[todayStr()];
   if(!w){ toast('请先保存今天的天气'); return; }
-  recPick = {outfit:new Set(), liked:null, comfort:null};
+  recPick = {outfit:new Set(pre||[]), liked:null, comfort:null, fit:null, itemComfort:{}};
   const f = feelsLike(w, profile);
   document.getElementById('recMeta').textContent = '今天 '+todayStr()+' · '+w.weather+' · 体感 '+f.feels+'°C';
   const partLabel = Object.fromEntries(PARTS.map(p=>[p.key,p.label]));
@@ -780,12 +879,39 @@ function openRecord(){
     const items = byPart[p.key]||[];
     if(!items.length) return '';
     return '<h3>'+p.ic+' '+partLabel[p.key]+'</h3>'
-      + items.map(it=>'<label class="check"><input type="checkbox" value="'+it.id+'"> '+esc(it.name)+'</label>').join('');
+      + items.map(it=>{
+          const on = recPick.outfit.has(it.id);
+          return '<div class="check" style="flex-wrap:wrap">'
+            + '<label><input type="checkbox" value="'+it.id+'"'+(on?' checked':'')+'> '+esc(it.name)+'</label>'
+            + '<span class="itemComfort" data-for="'+it.id+'" style="margin-left:auto;display:'+(on?'inline-flex':'none')+'">'
+            +   ['偏冷','正好','偏热'].map((x,i)=>'<button type="button" class="btn sm ghost" data-ic="'+i+'">'+x+'</button>').join('')
+            + '</span></div>';
+        }).join('');
   }).join('') || '<div class="empty">衣橱为空，先去添加单品。</div>';
+
+  // 勾选 → 显示该单品冷暖按钮
+  document.querySelectorAll('#recOutfit input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const id = cb.value;
+      const row = document.querySelector('#recOutfit .itemComfort[data-for="'+id+'"]');
+      if(row) row.style.display = cb.checked ? 'inline-flex' : 'none';
+      if(cb.checked) recPick.outfit.add(id); else { recPick.outfit.delete(id); delete recPick.itemComfort[id]; }
+    });
+  });
+  document.querySelectorAll('#recOutfit .itemComfort button').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const id = b.closest('.itemComfort').getAttribute('data-for');
+      recPick.itemComfort[id] = Number(b.getAttribute('data-ic'));
+      b.closest('.itemComfort').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x===b));
+    });
+  });
+
   document.getElementById('pickLiked').innerHTML = ['喜欢','一般','不喜欢'].map((x,i)=>
     '<div class="opt" data-liked="'+i+'">'+x+'</div>').join('');
   document.getElementById('pickComfort').innerHTML = ['偏冷','正好','偏热'].map((x,i)=>
     '<div class="opt" data-comfort="'+i+'">'+x+'</div>').join('');
+  document.getElementById('pickFit').innerHTML = ['合身','偏大','偏小'].map((x,i)=>
+    '<div class="opt" data-fit="'+i+'">'+x+'</div>').join('');
   document.getElementById('mask').classList.add('on');
 }
 function bindRecordPicks(){
@@ -798,6 +924,11 @@ function bindRecordPicks(){
     const t=e.target.closest('[data-comfort]'); if(!t) return;
     recPick.comfort = Number(t.getAttribute('data-comfort'));
     document.querySelectorAll('#pickComfort .opt').forEach(o=>o.classList.toggle('on', o===t));
+  });
+  document.getElementById('pickFit').addEventListener('click', e=>{
+    const t=e.target.closest('[data-fit]'); if(!t) return;
+    recPick.fit = Number(t.getAttribute('data-fit'));
+    document.querySelectorAll('#pickFit .opt').forEach(o=>o.classList.toggle('on', o===t));
   });
   document.getElementById('mask').addEventListener('click', e=>{ if(e.target.id==='mask') document.getElementById('mask').classList.remove('on'); });
 }
@@ -814,6 +945,16 @@ function saveRecord(){
   const ids = new Set(outfit);
   wardrobe.forEach(it=>{ if(ids.has(it.id)){ it.wornCount=(it.wornCount||0)+1; it.lastWorn=date; } });
 
+  // 单件冷暖反馈 → 累计 comfortBias（用于推荐时微调该单品温度范围）
+  Object.keys(recPick.itemComfort||{}).forEach(id=>{
+    const it = wardrobe.find(x=>x.id===id);
+    if(!it) return;
+    const c = recPick.itemComfort[id];
+    it.comfortSum = (it.comfortSum||0) + (c-1);
+    it.comfortN = (it.comfortN||0) + 1;
+    it.comfortBias = round1(it.comfortSum/it.comfortN);
+  });
+
   // 学习校正
   if(recPick.comfort!=null){
     profile.feedbackCount = (profile.feedbackCount||0)+1;
@@ -824,7 +965,7 @@ function saveRecord(){
 
   // 覆盖当天已有记录
   logs = logs.filter(l=>l.date!==date);
-  logs.push({date, weather:w, feels:f.feels, outfit, liked:recPick.liked, comfort:recPick.comfort});
+  logs.push({date, weather:w, feels:f.feels, outfit, liked:recPick.liked, comfort:recPick.comfort, fit:recPick.fit});
   logs.sort((a,b)=>a.date<b.date?1:-1);
 
   persist();
@@ -891,14 +1032,16 @@ function renderStats(){
   if(!logs.length){ rt.innerHTML = '<div class="empty">暂无记录。</div>'; return; }
   const likedTxt = ['喜欢','一般','不喜欢'];
   const comfortTxt = ['偏冷','正好','偏热'];
+  const fitTxt = ['合身','偏大','偏小'];
   const rows = logs.slice(0,12).map(l=>{
     const names = (l.outfit||[]).map(id=>{ const it=wardrobe.find(w=>w.id===id); return it?it.name:''; }).filter(Boolean).join('、');
     return '<tr><td>'+l.date+'</td><td>'+l.weather.weather+' '+l.weather.low+'~'+l.weather.high+'°C</td>'
       +'<td>'+esc(names||'—')+'</td>'
       +'<td>'+(l.liked!=null?likedTxt[l.liked]:'—')+'</td>'
-      +'<td>'+(l.comfort!=null?comfortTxt[l.comfort]:'—')+'</td></tr>';
+      +'<td>'+(l.comfort!=null?comfortTxt[l.comfort]:'—')+'</td>'
+      +'<td>'+(l.fit!=null?fitTxt[l.fit]:'—')+'</td></tr>';
   }).join('');
-  rt.innerHTML = '<table><thead><tr><th>日期</th><th>天气</th><th>穿着</th><th>喜欢</th><th>冷暖</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  rt.innerHTML = '<table><thead><tr><th>日期</th><th>天气</th><th>穿着</th><th>喜欢</th><th>冷暖</th><th>合身</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 function ramp(v, max){
   // 单色相 sequential（蓝，深=多）
@@ -974,6 +1117,7 @@ function renderBanner(){
 function renderAll(){
   renderBanner();
   renderWeatherForm();
+  renderTuneBar();
   recommend(todayStr());
   recommend(tomorrowStr());
   renderWardrobe();
