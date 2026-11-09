@@ -1,0 +1,6 @@
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+__pycache__/
+_check.js
