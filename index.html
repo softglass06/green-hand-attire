@@ -339,6 +339,29 @@ const WINDS = [
   {v:7, t:'强风（7级以上）'},
 ];
 
+/* Open-Meteo WMO 天气码 → 中文天气 */
+const WMO_KIND = {
+  0:'晴', 1:'晴', 2:'多云', 3:'阴',
+  45:'雾', 48:'雾',
+  51:'小雨', 53:'小雨', 55:'小雨', 56:'小雨', 57:'小雨',
+  61:'小雨', 63:'中雨', 65:'大雨', 66:'小雨', 67:'小雨',
+  71:'雪', 73:'雪', 75:'雪', 77:'雪',
+  80:'小雨', 81:'中雨', 82:'大雨',
+  85:'雪', 86:'雪',
+  95:'雷雨', 96:'雷雨', 99:'雷雨',
+};
+function wmoToKind(code){ return WMO_KIND[code] || '多云'; }
+
+/* 风速 km/h → 风力等级档（与 WINDS 的 v 对应） */
+function windToLevel(kmh){
+  if(!isFinite(kmh)) return 0;
+  if(kmh < 1) return 0;
+  if(kmh < 12) return 2;
+  if(kmh < 29) return 3;
+  if(kmh < 50) return 5;
+  return 7;
+}
+
 /* 体感温度 → 穿搭规则表（保暖等级 0-5） */
 const BANDS = [
   {max:0,  name:'严寒', levels:{inner:4,top:4,outer:5,bottom:4,shoes:5}, note:'注意围巾、帽子、手套，加强防寒'},
@@ -497,6 +520,63 @@ function recommend(dateStr){
   if(canRecord) document.getElementById('btnRecordToday').onclick = openRecord;
 }
 
+/* ============================== 天气 API（Open-Meteo，免费无需 key） ============================== */
+const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+const FC_URL  = 'https://api.open-meteo.com/v1/forecast';
+
+async function geocode(city){
+  const url = GEO_URL + '?name=' + encodeURIComponent(city) + '&count=1&language=zh&format=json';
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('地理编码请求失败 ('+r.status+')');
+  const j = await r.json();
+  if(!j.results || !j.results.length) throw new Error('找不到城市「'+city+'」');
+  const res = j.results[0];
+  return { lat: res.latitude, lon: res.longitude, name: res.name || city };
+}
+
+async function fetchForecast(lat, lon){
+  const url = FC_URL + '?latitude='+lat+'&longitude='+lon
+    + '&daily=weathercode,temperature_2m_max,temperature_2m_min,wind_speed_10m_max'
+    + '&timezone=auto&forecast_days=2';
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('天气请求失败 ('+r.status+')');
+  const j = await r.json();
+  const d = j.daily;
+  return [0,1].map(i=>({
+    high: Math.round(d.temperature_2m_max[i]),
+    low: Math.round(d.temperature_2m_min[i]),
+    weather: wmoToKind(d.weathercode[i]),
+    wind: windToLevel(d.wind_speed_10m_max ? d.wind_speed_10m_max[i] : 0),
+  }));
+}
+
+async function fetchWeather(city){
+  city = (city || '').trim();
+  if(!city){ toast('请先填写城市'); return; }
+  setFetchStatus('正在拉取「'+city+'」的天气…', null);
+  try{
+    const g = await geocode(city);
+    const days = await fetchForecast(g.lat, g.lon);
+    weather[todayStr()] = days[0];
+    weather[tomorrowStr()] = days[1];
+    profile.city = city;
+    profile.lastFetch = new Date().toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+    persist();
+    toast('已更新 '+g.name+' 的今明天气');
+    renderAll();
+  }catch(e){
+    console.warn('fetchWeather failed:', e);
+    setFetchStatus('拉取失败：'+e.message+'（可手动填写）', false);
+    toast('拉取天气失败，可手动填写');
+  }
+}
+function setFetchStatus(txt, ok){
+  const s = document.getElementById('fetchStatus');
+  if(!s) return;
+  s.textContent = txt;
+  s.style.color = ok===false ? 'var(--danger)' : (ok===true ? 'var(--good)' : 'var(--ink-3)');
+}
+
 /* ============================== 渲染：天气表单 ============================== */
 function renderWeatherForm(){
   const el = document.getElementById('weatherForm');
@@ -505,6 +585,14 @@ function renderWeatherForm(){
     {d:tomorrowStr(), label:'明天', copyFrom:todayStr()},
   ];
   let html = '';
+  html += '<div class="row" style="align-items:flex-end;margin-bottom:4px">'
+    + '<div class="col" style="max-width:260px"><label class="f">城市（自动拉取天气）</label>'
+    + '<input type="text" id="cityInput" value="'+esc(profile.city||'')+'" placeholder="如 北京、上海"></div>'
+    + '<div class="col" style="flex:0 0 auto"><button class="btn primary" id="btnFetch">🌤 拉取今明天气</button></div>'
+    + '</div>'
+    + '<div id="fetchStatus" style="font-size:12px;color:var(--ink-3);margin:0 0 12px">'
+    + (profile.lastFetch ? '上次更新：'+esc(profile.lastFetch)+' · 数据来自 Open-Meteo' : '数据来自 Open-Meteo（免费，无需 key）')
+    + '</div>';
   for(const day of days){
     const w = weather[day.d] || {high:'', low:'', weather:'晴', wind:0};
     html += '<h3>'+day.label+'（'+day.d+'）</h3>'
@@ -526,6 +614,11 @@ function renderWeatherForm(){
     html += '<div style="margin-top:10px"><button class="btn sm primary" data-save="'+day.d+'">保存'+day.label+'天气</button></div>';
   }
   el.innerHTML = html;
+
+  const btnFetch = document.getElementById('btnFetch');
+  if(btnFetch) btnFetch.onclick = ()=>fetchWeather(document.getElementById('cityInput').value);
+  const cityInput = document.getElementById('cityInput');
+  if(cityInput) cityInput.addEventListener('keydown', e=>{ if(e.key==='Enter') fetchWeather(cityInput.value); });
 
   el.querySelectorAll('[data-save]').forEach(b=>{
     b.onclick = ()=>{
@@ -797,7 +890,7 @@ function renderProfile(){
     + '<label class="f">偏好穿搭风格（可多选，用于优先推荐同风格单品）</label><div class="chips" data-grp="styles">'
     + STYLES.map(s=>'<span class="chip'+(profile.preferredStyles.includes(s)?' on':'')+'" data-k="style" data-v="'+s+'">'+s+'</span>').join('')
     + '</div>'
-    + '<label class="f">所在城市（仅展示用）</label><input type="text" id="pfCity" value="'+esc(profile.city||'')+'" placeholder="如 北京">'
+    + '<label class="f">所在城市（用于自动拉取天气）</label><input type="text" id="pfCity" value="'+esc(profile.city||'')+'" placeholder="如 北京">'
     + '<div style="margin-top:14px"><button class="btn primary" id="btnSaveProfile">保存画像</button></div>';
 
   // chip 交互
@@ -904,6 +997,11 @@ bindRecordPicks();
 
 /* ============================== 启动 ============================== */
 renderAll();
+
+/* 已设置城市且今日天气缺失时，自动拉取一次（尽力而为，失败不打扰） */
+if(profile.city && !weather[todayStr()]){
+  fetchWeather(profile.city);
+}
 </script>
 </body>
 </html>
